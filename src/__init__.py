@@ -1,0 +1,1 @@
+"""HotMeals Agent - Restaurant search and recommendation system."""

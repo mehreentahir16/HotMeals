@@ -1,0 +1,16 @@
+# Core LangChain and OpenAI
+langchain==1.2.7
+langchain-openai==1.1.7
+openai==2.15.0
+
+# Environment variables
+python-dotenv==1.2.1
+
+# Data processing
+pandas==2.3.3
+
+# Streamlit UI
+streamlit==1.53.1
+
+# Utilities
+python-dateutil==2.9.0.post0
