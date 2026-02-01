@@ -1,23 +1,23 @@
 """
-HotMeals Restaurant Agent - Streamlit UI
+BiteBot Restaurant Agent - Streamlit UI
 
 A conversational interface for the restaurant recommendation agent.
 """
 
 import streamlit as st
-from src.agent import create_hotmeals_agent, run_agent
+from src.agent import create_bitebot_agent, run_agent
 
 # Page configuration
 st.set_page_config(
-    page_title="HotMeals Restaurant Agent",
+    page_title="BiteBot Restaurant Agent",
     page_icon="🍽️",
     layout="wide"
 )
 
 # Title and description
-st.title("🍽️ HotMeals Restaurant Agent")
+st.title("🍽️ BiteBot Restaurant Agent")
 st.markdown("""
-Welcome to HotMeals! I'm your AI restaurant assistant powered by real Yelp data.
+Welcome to BiteBot! I'm your AI restaurant assistant powered by real Yelp data.
 
 Ask me to:
 - 🔍 Find restaurants by cuisine, location, or price
@@ -39,9 +39,9 @@ if "messages" not in st.session_state:
     st.session_state.messages = []
 
 if "agent" not in st.session_state:
-    with st.spinner("Initializing HotMeals agent..."):
+    with st.spinner("Initializing BiteBot agent..."):
         try:
-            st.session_state.agent = create_hotmeals_agent()
+            st.session_state.agent = create_bitebot_agent()
             st.success("✅ Agent initialized successfully!")
         except FileNotFoundError as e:
             st.error(f"❌ Database not found: {e}")
@@ -78,10 +78,14 @@ if prompt := st.chat_input("Ask me about restaurants..."):
     with st.chat_message("user"):
         st.markdown(prompt)
     
-    # Get agent response
+    # Get agent response with full conversation history
     with st.chat_message("assistant"):
         with st.spinner("Thinking..."):
-            response = run_agent(st.session_state.agent, prompt)
+            response = run_agent(
+                st.session_state.agent, 
+                prompt,
+                conversation_history=st.session_state.messages  # Pass existing messages
+            )
             
             # Extract output and intermediate steps
             output = response.get("output", "I apologize, but I couldn't process that request.")
@@ -111,9 +115,9 @@ if prompt := st.chat_input("Ask me about restaurants..."):
 
 # Sidebar
 with st.sidebar:
-    st.header("About HotMeals")
+    st.header("About BiteBot")
     st.markdown("""
-    **HotMeals** is an agentic AI system built for:
+    **BiteBot** is an agentic AI system built for:
     - 📚 "The Software Engineer's Guide to Agentic AI Systems & Observability"
     
     **Architecture:**
@@ -123,16 +127,16 @@ with st.sidebar:
     - 💬 UI: Streamlit
     
     **Tools:**
-    - `search_restaurants` - Find restaurants
-    - `get_restaurant_details` - Get info
-    - `check_if_open` - Check hours
+    - `search_restaurants_tool` - Find restaurants
+    - `get_restaurant_details_tool` - Get info
+    - `check_if_open_tool` - Check hours
     """)
     
     st.divider()
     
     if st.button("🔄 Reset Conversation"):
         st.session_state.messages = []
-        st.session_state.agent = create_hotmeals_agent()
+        st.session_state.agent = create_bitebot_agent()
         st.rerun()
     
     st.divider()

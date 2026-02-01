@@ -1,1 +1,1 @@
-"""HotMeals Agent - Restaurant search and recommendation system."""
+"""BiteBot Agent - Restaurant search and recommendation system."""

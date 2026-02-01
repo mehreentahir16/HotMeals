@@ -1,5 +1,5 @@
 """
-Database helper functions for the HotMeals agent.
+Database helper functions for the BiteBot agent.
 
 Provides functions to query the restaurant database.
 """
@@ -33,6 +33,14 @@ def search_restaurants(
     state: Optional[str] = None,
     min_stars: Optional[float] = None,
     max_price: Optional[int] = None,
+    has_takeout: Optional[bool] = None,
+    has_delivery: Optional[bool] = None,
+    outdoor_seating: Optional[bool] = None,
+    wheelchair_accessible: Optional[bool] = None,
+    good_for_kids: Optional[bool] = None,
+    has_wifi: Optional[bool] = None,
+    accepts_reservations: Optional[bool] = None, 
+    good_for_groups: Optional[bool] = None,  
     limit: int = 10
 ) -> List[Dict]:
     """
@@ -44,6 +52,8 @@ def search_restaurants(
         state: State abbreviation (e.g., 'PA', 'FL')
         min_stars: Minimum star rating (0-5)
         max_price: Maximum price range (1-4)
+        accepts_reservations: Filter for restaurants that accept reservations  
+        good_for_groups: Filter for restaurants good for groups 
         limit: Maximum number of results to return
         
     Returns:
@@ -56,7 +66,7 @@ def search_restaurants(
     query = "SELECT * FROM restaurants WHERE 1=1"
     params = []
     
-    # Add filters
+   # Attribute filters (basic SQL filtering)
     if cuisine:
         query += " AND categories LIKE ?"
         params.append(f"%{cuisine}%")
@@ -79,6 +89,38 @@ def search_restaurants(
         for i in range(1, int(max_price) + 1):
             params.append(f'%"RestaurantsPriceRange2": "{i}"%')
     
+    if has_takeout is not None:
+        query += " AND attributes LIKE ?"
+        params.append('%"RestaurantsTakeOut": "True"%' if has_takeout else '%"RestaurantsTakeOut": "False"%')
+    
+    if has_delivery is not None:
+        query += " AND attributes LIKE ?"
+        params.append('%"RestaurantsDelivery": "True"%' if has_delivery else '%"RestaurantsDelivery": "False"%')
+    
+    if outdoor_seating is not None:
+        query += " AND attributes LIKE ?"
+        params.append('%"OutdoorSeating": "True"%' if outdoor_seating else '%"OutdoorSeating": "False"%')
+    
+    if wheelchair_accessible is not None:
+        query += " AND attributes LIKE ?"
+        params.append('%"WheelchairAccessible": "True"%' if wheelchair_accessible else '%"WheelchairAccessible": "False"%')
+    
+    if good_for_kids is not None:
+        query += " AND attributes LIKE ?"
+        params.append('%"GoodForKids": "True"%' if good_for_kids else '%"GoodForKids": "False"%')
+    
+    if has_wifi is not None:
+        query += " AND attributes LIKE ?"
+        params.append('%"WiFi":%' if has_wifi else '')
+    
+    if accepts_reservations is not None:
+        query += " AND attributes LIKE ?"
+        params.append(f'%"RestaurantsReservations": "True"%' if accepts_reservations else '%"RestaurantsReservations": "False"%')
+    
+    if good_for_groups is not None:
+        query += " AND attributes LIKE ?"
+        params.append(f'%"RestaurantsGoodForGroups": "True"%' if good_for_groups else '%"RestaurantsGoodForGroups": "False"%')
+    
     # Order by rating and review count
     query += " ORDER BY stars DESC, review_count DESC LIMIT ?"
     params.append(limit)
@@ -87,7 +129,7 @@ def search_restaurants(
     results = cursor.fetchall()
     conn.close()
     
-    # Parse JSON fields
+    # Parse JSON fields and post-process for accurate filtering
     for result in results:
         if result.get('attributes'):
             try:

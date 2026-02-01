@@ -1,23 +1,29 @@
 """
-LangChain agent setup for HotMeals restaurant assistant.
+LangChain agent setup for BiteBot restaurant assistant.
 
 This module creates the agent that orchestrates the LLM, tools, and memory.
 Compatible with LangChain 1.2+ and OpenAI 2.15+
 """
 
 import os
-from langchain.agents import create_agent
-from langchain_openai import ChatOpenAI
+import logging
 from dotenv import load_dotenv
+
+from langchain_openai import ChatOpenAI
+from langchain.agents import create_agent
 
 from src.tools import all_tools
 
 # Load environment variables
 load_dotenv()
 
-def create_hotmeals_agent():
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+def create_bitebot_agent():
     """
-    Create and return the HotMeals restaurant agent.
+    Create and return the BiteBot restaurant agent.
     
     Returns:
         Agent: The configured LangChain agent
@@ -32,33 +38,40 @@ def create_hotmeals_agent():
     
     # Initialize the LLM
     model = ChatOpenAI(
-        model="gpt-4o-mini",  # Fast and affordable
-        temperature=0.7,  # Slightly creative but focused
+        model="gpt-4o-mini",
+        temperature=0.5,
     )
     
     # System prompt for the agent
-    system_prompt = """You are HotMeals, a friendly and helpful restaurant recommendation assistant.
+    system_prompt = """You are BiteBot, a friendly and helpful restaurant assistant. 
 
-Your role is to help users find restaurants that match their preferences using the tools available to you. You have access to a database of real restaurants from the Yelp dataset.
+        PERSONALITY:
+        - Warm, enthusiastic, and helpful
+        - Present information naturally in paragraphs where possible
 
-Guidelines:
-- Be conversational and friendly
-- Ask clarifying questions when needed (e.g., which city, what type of cuisine, price range)
-- Use search_restaurants_tool to find restaurants matching criteria
-- Use get_restaurant_details_tool to get comprehensive information about a specific restaurant
-- Use check_if_open_tool to verify if a restaurant is currently open
-- Provide recommendations based on ratings, reviews, and user preferences
-- If a search returns no results, suggest alternatives or ask the user to modify their criteria
-- Remember the conversation context to provide personalized recommendations
+        TOOLS:
+        - search_restaurants_tool: Find restaurants
+        - get_restaurant_details_tool: Get full info
+        - check_availability_tool: Check hours OR table availability (accepts natural language dates/times)
+        - make_reservation_tool: Book tables (requires exact YYYY-MM-DD and HH:MM format)
 
-When using tools:
-- Always provide input as valid JSON strings
-- For searching, use: {"cuisine": "Italian", "city": "Philadelphia", "min_stars": 4.0}
-- For details/open status, use: {"name": "Restaurant Name", "city": "City Name"}
+        IMPORTANT - RESERVATION WORKFLOW:
+        1. When user wants to book, ALWAYS call check_availability_tool FIRST with natural language
+        2. Extract the exact date and time from the availability response (it will be formatted as YYYY-MM-DD and HH:MM)
+        3. Use those exact values when calling make_reservation_tool
 
-Major cities in the dataset include: Philadelphia, Tampa, Phoenix, Indianapolis, Nashville, Tucson, New Orleans, and many more.
+        Example:
+        User: "Book tomorrow at 7pm for 4"
+        1. Call: check_availability_tool(date="tomorrow", time="7pm", party_size=4)
+        2. Response: "✅ Table available! 2026-02-02 (Sunday) at 19:00..."
+        3. Extract: date=2026-02-02, time=19:00
+        4. Call: make_reservation_tool(date="2026-02-02", time="19:00", party_size=4, customer_name=...)
 
-Remember: You're here to help users discover great restaurants and have an enjoyable dining experience!"""
+        Be conversational and helpful!"""
+    
+    logger.info(f"Creating agent with {len(all_tools)} tools")
+    for tool in all_tools:
+        logger.info(f"  - Tool: {tool.name}")
     
     # Create the agent with the new API
     agent = create_agent(
@@ -69,36 +82,79 @@ Remember: You're here to help users discover great restaurants and have an enjoy
     
     return agent
 
-def run_agent(agent, user_input: str):
+def run_agent(agent, user_input: str, conversation_history: list = None):
     """
-    Run the agent with user input.
+    Run the agent with user input and conversation history.
     
     Args:
         agent: The Agent instance
         user_input: The user's message
+        conversation_history: List of previous messages in the conversation
         
     Returns:
         dict: Response from the agent
     """
     try:
-        # Invoke the agent with the user input
-        response = agent.invoke({"messages": [{"role": "user", "content": user_input}]})
+        # Build the full message history
+        messages = []
+        
+        # Add previous conversation history if provided
+        if conversation_history:
+            for msg in conversation_history:
+                messages.append({
+                    "role": msg["role"],
+                    "content": msg["content"]
+                })
+        
+        # Add the new user message
+        messages.append({
+            "role": "user",
+            "content": user_input
+        })
+        
+        logger.info(f"[AGENT] Invoking agent with {len(messages)} messages")
+        logger.info(f"[AGENT] Latest user message: {user_input}")
+        
+        # Invoke the agent with full conversation history
+        response = agent.invoke({"messages": messages})
+        
+        logger.info(f"[AGENT] Response received")
+        logger.info(f"[AGENT] Response keys: {response.keys() if isinstance(response, dict) else 'Not a dict'}")
         
         # Extract the final message
         if response and "messages" in response:
-            messages = response["messages"]
-            if messages:
-                last_message = messages[-1]
+            response_messages = response["messages"]
+            logger.info(f"[AGENT] Got {len(response_messages)} response messages")
+            
+            # LOG ALL MESSAGES TO SEE TOOL CALLS
+            for i, msg in enumerate(response_messages):
+                msg_type = type(msg).__name__
+                logger.info(f"[AGENT] Message {i}: {msg_type}")
+                if hasattr(msg, 'content'):
+                    logger.info(f"[AGENT]   Content preview: {str(msg.content)[:100]}")
+                if hasattr(msg, 'tool_calls'):
+                    logger.info(f"[AGENT]   Tool calls: {msg.tool_calls}")
+                if msg_type == 'ToolMessage':
+                    logger.info(f"[AGENT]   Tool result: {str(msg)[:200]}")
+            
+            if response_messages:
+                last_message = response_messages[-1]
+                logger.info(f"[AGENT] Last message type: {type(last_message)}")
+                
+                output = last_message.content if hasattr(last_message, 'content') else str(last_message)
+                
                 return {
-                    "output": last_message.get("content", ""),
-                    "intermediate_steps": []  # New API doesn't expose this the same way
+                    "output": output,
+                    "intermediate_steps": []
                 }
         
+        logger.warning("[AGENT] No messages in response")
         return {
             "output": "I apologize, but I couldn't process that request.",
             "intermediate_steps": []
         }
     except Exception as e:
+        logger.error(f"[AGENT] Error: {e}", exc_info=True)
         return {
             "output": f"I apologize, but I encountered an error: {str(e)}. Please try rephrasing your request.",
             "intermediate_steps": []

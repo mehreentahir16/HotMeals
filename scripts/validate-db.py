@@ -1,5 +1,5 @@
 """
-Validation script for HotMeals database preparation.
+Validation script for BiteBot database preparation.
 
 This script tests the data preparation process using the sample Yelp data
 and validates that the database is created correctly.
@@ -15,7 +15,7 @@ from pathlib import Path
 def validate_sample_data():
     """Validate the database creation with sample data."""
     print("="*60)
-    print("HOTMEALS DATABASE VALIDATION")
+    print("BiteBot DATABASE VALIDATION")
     print("="*60)
     
     # Use the sample file

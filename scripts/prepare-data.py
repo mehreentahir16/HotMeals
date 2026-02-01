@@ -1,5 +1,5 @@
 """
-Data Preparation Script for HotMeals Agent
+Data Preparation Script for BiteBot Agent
 
 This script:
 1. Loads the Yelp academic dataset (yelp_academic_dataset_business.json)
