@@ -17,10 +17,9 @@ Memory architecture
 import os
 import re as _re
 import logging
-import warnings
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
-from langchain_core.messages import HumanMessage, trim_messages
+from langchain_core.messages import HumanMessage
 
 
 from langchain.agents import create_agent

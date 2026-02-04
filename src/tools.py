@@ -21,6 +21,7 @@ from src.database import (
     get_restaurant_by_id,
     is_open_now,
 )
+from src.review_rag import search_reviews
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -482,10 +483,84 @@ def make_reservation_tool(
     except Exception as e:
         logger.error(f"[MAKE_RESERVATION] Error: {e}", exc_info=True)
         return f"Error: {str(e)}"
+    
+# get_restaurant_reviews_tool
+@tool
+def get_restaurant_reviews_tool(
+    name: Optional[str] = None,
+    city: Optional[str] = None,
+    business_id: Optional[str] = None,
+    query: Optional[str] = None,
+    min_stars: Optional[float] = None,
+    limit: int = 5
+) -> str:
+    """Get customer reviews and experiences for a restaurant.
+    
+    Use this when users ask about:
+    - What people say about the food, service, ambiance
+    - Specific aspects like "is it noisy?", "good for dates?", "kid-friendly?"
+    - Recent customer experiences
+    
+    Args:
+        name: Restaurant name
+        city: City name (optional)
+        business_id: Yelp business ID (alternative to name)
+        query: Optional semantic search (e.g. "service", "romantic", "noisy", "pasta")
+        min_stars: Optional minimum rating filter (e.g. 4.0 for positive reviews only)
+        limit: Number of reviews to return (default 5)
+    """
+    logger.info(f"[REVIEWS] Called with name={name}, query={query}, min_stars={min_stars}")
+    
+    try:
+        # Resolve restaurant
+        if business_id:
+            restaurant = get_restaurant_by_id(business_id)
+        elif name:
+            restaurant = get_restaurant_by_name(name, city)
+        else:
+            return "Error: Please provide either restaurant name or business_id"
+        
+        if not restaurant:
+            return "Restaurant not found."
+        
+        logger.info(f"[REVIEWS] Found restaurant: {restaurant['name']}")
+        
+        # Search reviews
+        reviews = search_reviews(
+            business_id=restaurant['business_id'],
+            query=query,
+            top_k=limit,
+            min_stars=min_stars
+        )
+        
+        if not reviews:
+            return f"No reviews found for **{restaurant['name']}**."
+        
+        # Format output
+        header = f"**{restaurant['name']}** - Customer Reviews"
+        if query:
+            header += f" (about: {query})"
+        output = header + "\n\n"
+        
+        for i, review in enumerate(reviews, 1):
+            stars_display = "⭐" * int(review['stars'])
+            date_display = review['date'].split()[0] if review['date'] else 'Unknown'
+            useful_display = f" ({review['useful']} found useful)" if review['useful'] > 0 else ""
+            
+            output += f"{i}. {stars_display} {review['stars']}/5 - {date_display}{useful_display}\n"
+            output += f"   \"{review['text'][:300]}{'...' if len(review['text']) > 300 else ''}\"\n\n"
+        
+        logger.info(f"[REVIEWS] Returned {len(reviews)} reviews")
+        return output
+        
+    except Exception as e:
+        logger.error(f"[REVIEWS] Error: {e}", exc_info=True)
+        return f"Error retrieving reviews: {str(e)}"
 
 all_tools = [
     search_restaurants_tool,
     get_restaurant_details_tool,
     check_availability_tool,
-    make_reservation_tool
+    make_reservation_tool,
+    get_restaurant_reviews_tool,
 ]
