@@ -6,8 +6,9 @@ A conversational interface for restaurant discovery and reservations.
 
 from flask import Flask, render_template, request, jsonify, session
 import os
-import json
 import re
+import json
+import uuid
 from datetime import datetime
 from dotenv import load_dotenv
 from src.agent import create_bitebot_agent, run_agent
@@ -36,6 +37,9 @@ def index():
         session['reservations'] = []
     if 'tool_context' not in session:
         session['tool_context'] = {}
+    if 'thread_id' not in session:
+        import uuid
+        session['thread_id'] = str(uuid.uuid4())
 
     return render_template('index.html')
 
@@ -55,18 +59,18 @@ def chat():
         if not user_message:
             return jsonify({'error': 'Empty message'}), 400
 
-        # Get conversation history and tool context from session
-        conversation_history = session.get('messages', [])
+        # Get tool context from session (inter-tool state like availability)
         tool_context = session.get('tool_context', {})
 
-        # Add user message to history
-        conversation_history.append({
-            'role': 'user',
-            'content': user_message
-        })
+        # thread_id scopes the agent's memory to this session.
+        # The checkpointer owns conversation history — we only send the new message.
+        thread_id = session.get('thread_id')
+        if not thread_id:
+            thread_id = str(uuid.uuid4())
+            session['thread_id'] = thread_id
 
-        # Get agent response (passes tool_context so tools can share state across turns)
-        response = run_agent(agent, user_message, conversation_history, tool_context)
+        # Get agent response
+        response = run_agent(agent, user_message, thread_id, tool_context)
         assistant_message = response.get('output', 'Sorry, I encountered an error.')
 
         # Store reservation if make_reservation_tool fired this turn
@@ -82,21 +86,15 @@ def chat():
             except json.JSONDecodeError:
                 pass
 
-        # Clean up the output (remove IMPORTANT line)
+        # Clean up the output (remove IMPORTANT line if the LLM echoed it)
         clean_message = re.sub(r'\n*IMPORTANT: This reservation data includes: {.*?}\n*', '', assistant_message)
 
-        # Only persist the final assistant message — NOT the intermediate
-        # AIMessage+ToolMessage pairs.  Those have tool_calls metadata that
-        # _serialize_message strips, which makes OpenAI reject the replay
-        # ("tool message must follow a message with tool_calls").
-        # tool_context handles inter-tool state across turns now.
-        conversation_history.append({
-            'role': 'assistant',
-            'content': clean_message
-        })
-
-        # Update session
-        session['messages'] = conversation_history
+        # session['messages'] is for the chat UI only — the agent's memory
+        # lives in the checkpointer keyed by thread_id.
+        ui_messages = session.get('messages', [])
+        ui_messages.append({'role': 'user',      'content': user_message})
+        ui_messages.append({'role': 'assistant', 'content': clean_message})
+        session['messages'] = ui_messages
         session['tool_context'] = response.get('tool_context', {})
         session.modified = True
 
@@ -118,6 +116,7 @@ def reset():
     session['messages'] = []
     session['reservations'] = []
     session['tool_context'] = {}
+    session['thread_id'] = str(uuid.uuid4())  # new thread = fresh agent memory
     session.modified = True
     return jsonify({'status': 'ok'})
 

@@ -2,22 +2,18 @@
 Agent tools for the BiteBot restaurant assistant.
 
 These tools allow the LLM to interact with the restaurant database.
-Compatible with LangChain 1.2+
 """
 
-import uuid
+import re
 import json
+import uuid
+import logging
+import threading
+import dateparser
+import contextvars
 from typing import Optional
 from datetime import datetime
-
-import logging
-import re
-import dateparser
 from langchain.tools import tool
-
-# Set up logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 from src.database import (
     search_restaurants,
@@ -26,32 +22,50 @@ from src.database import (
     is_open_now,
 )
 
-# Conversation context – set by run_agent() before each invocation.
-# Tools read from this when they need info from earlier in the conversation.
-
-_conversation_context: list = []
-
-def set_conversation_context(messages: list):
-    """Called by run_agent before invoking the agent."""
-    global _conversation_context
-    _conversation_context = messages
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Tool context – generic key/value store for inter-tool state.
 # Persisted across HTTP requests via Flask session (see app.py / agent.py).
 
-_tool_context: dict = {}
+_tool_contexts: dict = {}           # thread_id -> {key: value}
+_tool_ctx_lock = threading.Lock()   # guards _tool_contexts
+_active_session: contextvars.ContextVar[str] = contextvars.ContextVar(
+    '_active_session', default=None
+)
+
+def set_active_session(thread_id: str):
+    """Bind the current execution context to a session.  Called by run_agent
+    before agent.invoke() so that tools land in the right bucket."""
+    _active_session.set(thread_id)
+
 
 def set_tool_context(key: str, value):
-    """Store a value in the shared tool context."""
-    _tool_context[key] = value
+    """Store a value in the current session's tool context."""
+    sid = _active_session.get()
+    with _tool_ctx_lock:
+        if sid not in _tool_contexts:
+            _tool_contexts[sid] = {}
+        _tool_contexts[sid][key] = value
+
 
 def get_tool_context(key: str):
-    """Retrieve a value from the shared tool context."""
-    return _tool_context.get(key)
+    """Retrieve a value from the current session's tool context."""
+    sid = _active_session.get()
+    if sid is None:
+        return None
+    with _tool_ctx_lock:
+        return _tool_contexts.get(sid, {}).get(key)
+
 
 def clear_tool_context(key: str):
-    """Remove a key from the shared tool context."""
-    _tool_context.pop(key, None)
+    """Remove a key from the current session's tool context."""
+    sid = _active_session.get()
+    if sid is None:
+        return
+    with _tool_ctx_lock:
+        if sid in _tool_contexts:
+            _tool_contexts[sid].pop(key, None)
 
 @tool
 def search_restaurants_tool(
@@ -71,49 +85,42 @@ def search_restaurants_tool(
     limit: int = 10
 ) -> str:
     """Search for restaurants based on criteria like cuisine, location, rating, price, and amenities.
-    
+
     Args:
-        query: JSON string with optional fields:
-            - cuisine: cuisine type (e.g., 'Italian', 'Mexican', 'Chinese')
-            - city: city name (e.g., 'Philadelphia', 'Tampa')
-            - state: state abbreviation (e.g., 'PA', 'FL')
-            - min_stars: minimum rating (1.0-5.0)
-            - max_price: max price range (1-4)
-            - has_takeout: true/false for takeout availability
-            - has_delivery: true/false for delivery availability
-            - outdoor_seating: true/false for outdoor seating
-            - wheelchair_accessible: true/false for accessibility
-            - good_for_kids: true/false for kid-friendly
-            - has_wifi: true/false for WiFi availability
-            - accepts_reservations: true/false for reservation capability
-            - good_for_groups: true/false for group-friendly
-            - limit: max results (default 10)
-        
-    Example: {"cuisine": "Italian", "city": "Philadelphia", "min_stars": 4.0, "outdoor_seating": true, "accepts_reservations": true}
+        cuisine: Cuisine type (e.g., 'Italian', 'Mexican', 'Chinese')
+        city: City name (e.g., 'Philadelphia', 'Tampa')
+        state: State abbreviation (e.g., 'PA', 'FL')
+        min_stars: Minimum rating (1.0-5.0)
+        max_price: Max price range (1-4)
+        has_takeout: Takeout availability
+        has_delivery: Delivery availability
+        outdoor_seating: Outdoor seating
+        wheelchair_accessible: Wheelchair accessibility
+        good_for_kids: Kid-friendly
+        has_wifi: WiFi availability
+        accepts_reservations: Accepts reservations
+        good_for_groups: Good for groups
+        limit: Max results (default 10)
     """
+    logger.info(f"[SEARCH] Called with cuisine={cuisine}, city={city}, state={state}")
+
     try:
         results = search_restaurants(
-            cuisine=cuisine,
-            city=city,
-            state=state,
-            min_stars=min_stars,
-            max_price=max_price,
-            has_takeout=has_takeout,
-            has_delivery=has_delivery,
+            cuisine=cuisine, city=city, state=state,
+            min_stars=min_stars, max_price=max_price,
+            has_takeout=has_takeout, has_delivery=has_delivery,
             outdoor_seating=outdoor_seating,
             wheelchair_accessible=wheelchair_accessible,
-            good_for_kids=good_for_kids,
-            has_wifi=has_wifi,
+            good_for_kids=good_for_kids, has_wifi=has_wifi,
             accepts_reservations=accepts_reservations,
-            good_for_groups=good_for_groups,
-            limit=limit
+            good_for_groups=good_for_groups, limit=limit
         )
 
         logger.info(f"[SEARCH] Found {len(results)} results")
-        
+
         if not results:
             return "No restaurants found matching your criteria. Try broadening your search."
-        
+
         output = f"Found {len(results)} restaurant(s):\n\n"
         for i, restaurant in enumerate(results, 1):
             price_range = "N/A"
@@ -122,9 +129,9 @@ def search_restaurants_tool(
                 if price:
                     try:
                         price_range = '$' * int(price)
-                    except:
+                    except (ValueError, TypeError):
                         pass
-            
+
             output += f"{i}. **{restaurant['name']}**\n"
             output += f"   📍 {restaurant['address']}, {restaurant['city']}, {restaurant['state']}\n"
             output += f"   ⭐ {restaurant['stars']} stars ({restaurant['review_count']} reviews)\n"
@@ -132,9 +139,9 @@ def search_restaurants_tool(
             output += f"   🍽️  {restaurant['categories']}\n"
             output += f"   Status: {'🟢 Open' if restaurant['is_open'] == 1 else '🔴 Closed'}\n"
             output += f"   ID: {restaurant['business_id']}\n\n"
-        
+
         return output
-        
+
     except Exception as e:
         logger.error(f"[SEARCH] Error: {e}", exc_info=True)
         return f"Error searching restaurants: {str(e)}"
@@ -146,14 +153,14 @@ def get_restaurant_details_tool(
     business_id: Optional[str] = None
 ) -> str:
     """Get detailed information about a specific restaurant.
-    
+
     Args:
         name: Restaurant name
         city: City name (optional, for disambiguation)
         business_id: Yelp business ID (alternative to name)
     """
     logger.info(f"[DETAILS] Called with name={name}, city={city}, business_id={business_id}")
-    
+
     try:
         if business_id:
             restaurant = get_restaurant_by_id(business_id)
@@ -161,42 +168,41 @@ def get_restaurant_details_tool(
             restaurant = get_restaurant_by_name(name, city)
         else:
             return "Error: Please provide either 'name' or 'business_id'"
-        
+
         if not restaurant:
             return "Restaurant not found. Please check the name and try again."
-        
+
         logger.info(f"[DETAILS] Found: {restaurant['name']}")
-        
+
         output = f"**{restaurant['name']}**\n\n"
         output += f"📍 Address:\n   {restaurant['address']}\n   {restaurant['city']}, {restaurant['state']} {restaurant['postal_code']}\n\n"
         output += f"⭐ Rating: {restaurant['stars']} stars ({restaurant['review_count']} reviews)\n\n"
-        
+
         if restaurant.get('attributes') and isinstance(restaurant['attributes'], dict):
             price = restaurant['attributes'].get('RestaurantsPriceRange2')
             if price:
                 try:
                     output += f"💰 Price Range: {'$' * int(price)}\n\n"
-                except:
+                except (ValueError, TypeError):
                     pass
-        
+
         output += f"🍽️  Categories: {restaurant['categories']}\n\n"
         output += f"Status: {'🟢 Currently Open' if restaurant['is_open'] == 1 else '🔴 Currently Closed'}\n\n"
-        
+
         if restaurant.get('hours') and isinstance(restaurant['hours'], dict):
             output += "🕒 Hours:\n"
             for day in ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']:
                 output += f"   {day}: {restaurant['hours'].get(day, 'N/A')}\n"
             output += "\n"
-        
-        # Pass ALL attributes as JSON
+
         if restaurant.get('attributes') and isinstance(restaurant['attributes'], dict):
             output += "ℹ️  Amenities & Features:\n"
             output += json.dumps(restaurant['attributes'], indent=2)
             output += "\n\n"
-        
+
         output += f"🆔 Business ID: {restaurant['business_id']}\n"
         return output
-        
+
     except Exception as e:
         logger.error(f"[DETAILS] Error: {e}", exc_info=True)
         return f"Error getting restaurant details: {str(e)}"
@@ -246,7 +252,7 @@ def check_availability_tool(
             if not accepts_reservations:
                 return f"❌ **{restaurant['name']}** does not accept reservations. This is a walk-in only restaurant."
 
-            # --- parse date ----------------------------------------------
+            # parse date 
             if date:
                 logger.info(f"[CHECK_AVAILABILITY] Parsing date: '{date}'")
                 reservation_date = dateparser.parse(
@@ -262,13 +268,13 @@ def check_availability_tool(
 
                 if not reservation_date:
                     return (f"Error: Could not understand date '{date}'. "
-                            "Try 'today', 'tomorrow', 'friday', 'next thursday', or 'YYYY-MM-DD'.")
+                            "Try 'today', 'tomorrow', 'this friday', 'next thursday', or 'YYYY-MM-DD'.")
 
                 logger.info(f"[CHECK_AVAILABILITY] Parsed date → {reservation_date.strftime('%Y-%m-%d %A')}")
             else:
                 reservation_date = now
 
-            # --- parse time ----------------------------------------------
+            # parse time 
             if time:
                 logger.info(f"[CHECK_AVAILABILITY] Parsing time: '{time}'")
                 time_str = f"{reservation_date.strftime('%Y-%m-%d')} {time}"
@@ -292,7 +298,7 @@ def check_availability_tool(
             else:
                 reservation_time = now.strftime('%H:%M')
 
-            # --- check hours ---------------------------------------------
+            # check hours
             day_name = reservation_date.strftime("%A")
 
             if restaurant.get('hours') and day_name in restaurant['hours']:
@@ -338,7 +344,7 @@ def check_availability_tool(
             else:
                 return f"Hours not available for {day_name} at **{restaurant['name']}**."
 
-        # --- no date/time → just check if open now ------------------------
+        # no date/time → just check if open now 
         is_open, message = is_open_now(restaurant.get('hours'))
         output  = f"**{restaurant['name']}** in {restaurant['city']}, {restaurant['state']}\n"
         output += f"✅ {message}" if is_open else f"❌ {message}"
@@ -387,7 +393,7 @@ def make_reservation_tool(
     logger.info(f"[MAKE_RESERVATION] Called – name={name}, customer_name={customer_name}")
 
     try:
-        # validate customer name 
+        # --- validate customer name ---------------------------------------
         if not customer_name or not customer_name.strip():
             return "❌ Please provide the name you'd like the reservation under."
 
@@ -398,7 +404,7 @@ def make_reservation_tool(
         if len(customer_name.strip()) < 2:
             return f"❌ '{customer_name}' is too short. Please ask for the user's full name."
 
-        # resolve restaurant 
+        # --- resolve restaurant -------------------------------------------
         if business_id:
             restaurant = get_restaurant_by_id(business_id)
         elif name:
@@ -409,7 +415,7 @@ def make_reservation_tool(
         if not restaurant:
             return "Restaurant not found."
 
-        # reservations supported?
+        # --- reservations supported? --------------------------------------
         accepts_reservations = False
         if restaurant.get('attributes') and isinstance(restaurant['attributes'], dict):
             accepts_reservations = restaurant['attributes'].get('RestaurantsReservations') == 'True'
@@ -417,7 +423,7 @@ def make_reservation_tool(
         if not accepts_reservations:
             return f"❌ **{restaurant['name']}** does not accept reservations (walk-in only)."
 
-        # pull date/time from tool_context (single source of truth) 
+        # --- pull date/time from tool_context (single source of truth) ----
         availability = get_tool_context('availability')
         if not availability:
             return "❌ Please check availability first before making a reservation."
@@ -427,12 +433,12 @@ def make_reservation_tool(
         party_size            = availability['party_size']
         logger.info(f"[MAKE_RESERVATION] Using date/time from tool_context: {reservation_date_str} {reservation_time_str}")
 
-        # sanity checks 
+        # --- sanity checks ------------------------------------------------
         reservation_date = datetime.strptime(reservation_date_str, '%Y-%m-%d')
         if reservation_date.date() < datetime.now().date():
             return "Error: The availability date is in the past. Please check availability again."
 
-        # build confirmation 
+        # --- build confirmation -------------------------------------------
         reservation_id = str(uuid.uuid4())[:8]
 
         reservation = {
