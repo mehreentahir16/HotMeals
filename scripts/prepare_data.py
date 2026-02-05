@@ -9,10 +9,11 @@ This script:
 
 """
 
+import os
 import json
 import random
 import sqlite3
-import os
+import traceback
 from pathlib import Path
 from collections import Counter
 
@@ -223,7 +224,6 @@ def main():
         
     except Exception as e:
         print(f"\nERROR: {e}")
-        import traceback
         traceback.print_exc()
         return
 
