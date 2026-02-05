@@ -36,8 +36,7 @@ _active_session: contextvars.ContextVar[str] = contextvars.ContextVar(
 )
 
 def set_active_session(thread_id: str):
-    """Bind the current execution context to a session.  Called by run_agent
-    before agent.invoke() so that tools land in the right bucket."""
+    """Bind the current execution context to a session.  Called by run_agent before agent.invoke() so that tools land in the right bucket."""
     _active_session.set(thread_id)
 
 
@@ -67,6 +66,19 @@ def clear_tool_context(key: str):
     with _tool_ctx_lock:
         if sid in _tool_contexts:
             _tool_contexts[sid].pop(key, None)
+
+# Support context: reservation list for support agent tools.
+# Uses the same thread-safe context system as restaurant tools.
+
+def set_support_context(reservations: list):
+    """Set the reservations context for support tools (session-aware)."""
+    set_tool_context('reservations', reservations)
+
+
+def get_support_context() -> list:
+    """Get the reservations context for support tools (session-aware)."""
+    return get_tool_context('reservations') or []
+
 
 @tool
 def search_restaurants_tool(
@@ -103,7 +115,7 @@ def search_restaurants_tool(
         good_for_groups: Good for groups
         limit: Max results (default 10)
     """
-    logger.info(f"[SEARCH] Called with cuisine={cuisine}, city={city}, state={state}")
+    logger.info(f"Searching restaurants: cuisine={cuisine}, city={city}, state={state}")
 
     try:
         results = search_restaurants(
@@ -117,7 +129,7 @@ def search_restaurants_tool(
             good_for_groups=good_for_groups, limit=limit
         )
 
-        logger.info(f"[SEARCH] Found {len(results)} results")
+        logger.info(f"Found {len(results)} restaurants")
 
         if not results:
             return "No restaurants found matching your criteria. Try broadening your search."
@@ -144,7 +156,7 @@ def search_restaurants_tool(
         return output
 
     except Exception as e:
-        logger.error(f"[SEARCH] Error: {e}", exc_info=True)
+        logger.error(f"Error searching restaurants: {e}", exc_info=True)
         return f"Error searching restaurants: {str(e)}"
 
 @tool
@@ -160,7 +172,7 @@ def get_restaurant_details_tool(
         city: City name (optional, for disambiguation)
         business_id: Yelp business ID (alternative to name)
     """
-    logger.info(f"[DETAILS] Called with name={name}, city={city}, business_id={business_id}")
+    logger.info(f"Getting details: name={name}, city={city}, business_id={business_id}")
 
     try:
         if business_id:
@@ -173,7 +185,7 @@ def get_restaurant_details_tool(
         if not restaurant:
             return "Restaurant not found. Please check the name and try again."
 
-        logger.info(f"[DETAILS] Found: {restaurant['name']}")
+        logger.info(f"Found restaurant: {restaurant['name']}")
 
         output = f"**{restaurant['name']}**\n\n"
         output += f"📍 Address:\n   {restaurant['address']}\n   {restaurant['city']}, {restaurant['state']} {restaurant['postal_code']}\n\n"
@@ -205,7 +217,7 @@ def get_restaurant_details_tool(
         return output
 
     except Exception as e:
-        logger.error(f"[DETAILS] Error: {e}", exc_info=True)
+        logger.error(f"Error getting restaurant details: {e}", exc_info=True)
         return f"Error getting restaurant details: {str(e)}"
 
 @tool
@@ -226,9 +238,9 @@ def check_availability_tool(
         date: Date exactly as user said it - "today", "tomorrow", "this friday", "next thursday", "2026-02-15", etc.
               Do NOT convert to a date yourself — pass the user's words directly.
         time: Time in ANY format - "7pm", "19:00", "7:30 PM", etc.
-        party_size: Number of people (default 2)
+        party_size: Number of people 
     """
-    logger.info(f"[CHECK_AVAILABILITY] Called with name={name}, date={date}, time={time}, party_size={party_size}")
+    logger.info(f"Checking availability: name={name}, date={date}, time={time}, party_size={party_size}")
 
     try:
         if business_id:
@@ -241,7 +253,7 @@ def check_availability_tool(
         if not restaurant:
             return "Restaurant not found."
 
-        logger.info(f"[CHECK_AVAILABILITY] Found: {restaurant['name']}")
+        logger.info(f"Found restaurant: {restaurant['name']}")
 
         accepts_reservations = False
         if restaurant.get('attributes') and isinstance(restaurant['attributes'], dict):
@@ -255,7 +267,6 @@ def check_availability_tool(
 
             # parse date 
             if date:
-                logger.info(f"[CHECK_AVAILABILITY] Parsing date: '{date}'")
                 reservation_date = dateparser.parse(
                     date,
                     settings={
@@ -271,13 +282,11 @@ def check_availability_tool(
                     return (f"Error: Could not understand date '{date}'. "
                             "Try 'today', 'tomorrow', 'this friday', 'next thursday', or 'YYYY-MM-DD'.")
 
-                logger.info(f"[CHECK_AVAILABILITY] Parsed date → {reservation_date.strftime('%Y-%m-%d %A')}")
             else:
                 reservation_date = now
 
             # parse time 
             if time:
-                logger.info(f"[CHECK_AVAILABILITY] Parsing time: '{time}'")
                 time_str = f"{reservation_date.strftime('%Y-%m-%d')} {time}"
                 parsed_dt = dateparser.parse(time_str, settings={'RETURN_AS_TIMEZONE_AWARE': False})
 
@@ -295,7 +304,6 @@ def check_availability_tool(
                     else:
                         return f"Error: Could not understand time '{time}'. Try '7pm', '19:00', or '7:30 PM'."
 
-                logger.info(f"[CHECK_AVAILABILITY] Parsed time → {reservation_time}")
             else:
                 reservation_time = now.strftime('%H:%M')
 
@@ -334,7 +342,7 @@ def check_availability_tool(
                     'party_size': party_size,
                     'restaurant': restaurant['name'],
                 })
-                logger.info(f"[CHECK_AVAILABILITY] Stored availability in tool_context")
+                logger.info("Availability confirmed and stored in context")
 
                 output  = f"✅ **{restaurant['name']}**\n"
                 output += f"📅 {date_str} ({day_name}) at {reservation_time}\n"
@@ -359,7 +367,7 @@ def check_availability_tool(
         return output
 
     except Exception as e:
-        logger.error(f"[CHECK_AVAILABILITY] Error: {e}", exc_info=True)
+        logger.error(f"Error checking availability: {e}", exc_info=True)
         return f"Error: {str(e)}"
 
 @tool
@@ -391,10 +399,10 @@ def make_reservation_tool(
         customer_phone: Contact phone (optional)
         special_requests: Any special requests (optional)
     """
-    logger.info(f"[MAKE_RESERVATION] Called – name={name}, customer_name={customer_name}")
+    logger.info(f"Making reservation for {customer_name} at restaurant: {name}")
 
     try:
-        # --- validate customer name ---------------------------------------
+        # validate customer name 
         if not customer_name or not customer_name.strip():
             return "❌ Please provide the name you'd like the reservation under."
 
@@ -405,7 +413,7 @@ def make_reservation_tool(
         if len(customer_name.strip()) < 2:
             return f"❌ '{customer_name}' is too short. Please ask for the user's full name."
 
-        # --- resolve restaurant -------------------------------------------
+        # resolve restaurant ----
         if business_id:
             restaurant = get_restaurant_by_id(business_id)
         elif name:
@@ -416,7 +424,7 @@ def make_reservation_tool(
         if not restaurant:
             return "Restaurant not found."
 
-        # --- reservations supported? --------------------------------------
+        # reservations supported? 
         accepts_reservations = False
         if restaurant.get('attributes') and isinstance(restaurant['attributes'], dict):
             accepts_reservations = restaurant['attributes'].get('RestaurantsReservations') == 'True'
@@ -424,7 +432,7 @@ def make_reservation_tool(
         if not accepts_reservations:
             return f"❌ **{restaurant['name']}** does not accept reservations (walk-in only)."
 
-        # --- pull date/time from tool_context (single source of truth) ----
+        # pull date/time from tool_context (single source of truth) ----
         availability = get_tool_context('availability')
         if not availability:
             return "❌ Please check availability first before making a reservation."
@@ -432,14 +440,13 @@ def make_reservation_tool(
         reservation_date_str = availability['date']
         reservation_time_str = availability['time']
         party_size            = availability['party_size']
-        logger.info(f"[MAKE_RESERVATION] Using date/time from tool_context: {reservation_date_str} {reservation_time_str}")
 
-        # --- sanity checks ------------------------------------------------
+        # sanity checks 
         reservation_date = datetime.strptime(reservation_date_str, '%Y-%m-%d')
         if reservation_date.date() < datetime.now().date():
             return "Error: The availability date is in the past. Please check availability again."
 
-        # --- build confirmation -------------------------------------------
+        # build confirmation 
         reservation_id = str(uuid.uuid4())[:8]
 
         reservation = {
@@ -456,6 +463,10 @@ def make_reservation_tool(
             'status':           'confirmed',
             'created_at':       datetime.now().isoformat()
         }
+
+        # Store reservation in tool context instead of embedding in string
+        set_tool_context('reservation', reservation)
+        logger.info(f"Reservation created: {reservation_id}")
 
         # Reservation confirmed — availability consumed, clear it
         clear_tool_context('availability')
@@ -474,14 +485,11 @@ def make_reservation_tool(
             output += f"💬 Special Requests: {special_requests}\n"
 
         output += f"\n✅ Your table is reserved!\n"
-        output += f"📝 Confirmation: {reservation_id}\n\n"
-        output += f"IMPORTANT: This reservation data includes: {json.dumps(reservation)}"
 
-        logger.info(f"[MAKE_RESERVATION] Success! ID={reservation_id}")
         return output
 
     except Exception as e:
-        logger.error(f"[MAKE_RESERVATION] Error: {e}", exc_info=True)
+        logger.error(f"Error making reservation: {e}", exc_info=True)
         return f"Error: {str(e)}"
     
 # get_restaurant_reviews_tool
@@ -509,7 +517,7 @@ def get_restaurant_reviews_tool(
         min_stars: Optional minimum rating filter (e.g. 4.0 for positive reviews only)
         limit: Number of reviews to return (default 5)
     """
-    logger.info(f"[REVIEWS] Called with name={name}, query={query}, min_stars={min_stars}")
+    logger.info(f"Getting reviews: name={name}, query={query}, min_stars={min_stars}")
     
     try:
         # Resolve restaurant
@@ -523,7 +531,7 @@ def get_restaurant_reviews_tool(
         if not restaurant:
             return "Restaurant not found."
         
-        logger.info(f"[REVIEWS] Found restaurant: {restaurant['name']}")
+        logger.info(f"Found restaurant: {restaurant['name']}")
         
         # Search reviews
         reviews = search_reviews(
@@ -550,17 +558,275 @@ def get_restaurant_reviews_tool(
             output += f"{i}. {stars_display} {review['stars']}/5 - {date_display}{useful_display}\n"
             output += f"   \"{review['text'][:300]}{'...' if len(review['text']) > 300 else ''}\"\n\n"
         
-        logger.info(f"[REVIEWS] Returned {len(reviews)} reviews")
+        logger.info(f"Returned {len(reviews)} reviews")
         return output
         
     except Exception as e:
-        logger.error(f"[REVIEWS] Error: {e}", exc_info=True)
+        logger.error(f"Error retrieving reviews: {e}", exc_info=True)
         return f"Error retrieving reviews: {str(e)}"
+    
+@tool
+def view_reservation_tool(confirmation_number: Optional[str] = None) -> str:
+    """Look up a reservation by confirmation number, or view all reservations.
 
-all_tools = [
+    If no confirmation_number is provided:
+    - If customer has exactly 1 reservation → show it
+    - If customer has multiple reservations → list them all
+    - If customer has no reservations → tell them
+
+    Args:
+        confirmation_number: The reservation confirmation ID (e.g. "a1b2c3d4") - optional
+    """
+    logger.info(f"Viewing reservation: {confirmation_number or 'all'}")
+
+    try:
+        reservations = get_support_context()
+        
+        # If no confirmation number provided, handle based on reservation count
+        if not confirmation_number:
+            if not reservations:
+                return "❌ You don't have any reservations in the system."
+            
+            if len(reservations) == 1:
+                # Exactly one reservation - show it
+                reservation = reservations[0]
+                logger.info(f"Auto-selected single reservation: {reservation['reservation_id']}")
+            else:
+                # Multiple reservations - list them
+                output = f"You have {len(reservations)} reservations:\n\n"
+                for i, r in enumerate(reservations, 1):
+                    output += f"{i}. **{r['restaurant_name']}**\n"
+                    output += f"   📋 Confirmation: {r['reservation_id']}\n"
+                    output += f"   📅 {r['date']} at {r['time']}\n"
+                    output += f"   👥 Party of {r['party_size']}\n\n"
+                output += "Which reservation would you like to view? Please provide the confirmation number."
+                return output
+        else:
+            # Search for specific reservation
+            reservation = None
+            for r in reservations:
+                if r.get("reservation_id", "").lower() == confirmation_number.lower():
+                    reservation = r
+                    break
+
+            if not reservation:
+                return f"❌ No reservation found with confirmation number '{confirmation_number}'.\n\nPlease check the number and try again."
+
+        # Format output for single reservation
+        output = f"✅ **Reservation Found**\n\n"
+        output += f"📋 Confirmation #: {reservation['reservation_id']}\n\n"
+        output += f"🍽️  **{reservation['restaurant_name']}**\n"
+        output += f"📍 {reservation['address']}\n\n"
+        output += f"📅 Date: {reservation['date']}\n"
+        output += f"🕐 Time: {reservation['time']}\n"
+        output += f"👥 Party Size: {reservation['party_size']}\n"
+        output += f"👤 Name: {reservation['customer_name']}\n"
+        output += f"📞 Phone: {reservation['customer_phone']}\n"
+
+        if reservation.get("special_requests") and reservation["special_requests"] != "None":
+            output += f"💬 Special Requests: {reservation['special_requests']}\n"
+
+        output += f"\nStatus: {reservation.get('status', 'confirmed').upper()}"
+
+        return output
+
+    except Exception as e:
+        logger.error(f"Error viewing reservation: {e}", exc_info=True)
+        return f"Error looking up reservation: {str(e)}"
+    
+@tool
+def modify_reservation_tool(
+    confirmation_number: Optional[str] = None,
+    new_date: Optional[str] = None,
+    new_time: Optional[str] = None,
+    new_party_size: Optional[int] = None,
+) -> str:
+    """Modify an existing reservation.
+
+    If no confirmation_number is provided:
+    - If customer has exactly 1 reservation → modify it
+    - If customer has multiple reservations → ask which one
+    - If customer has no reservations → tell them
+
+    IMPORTANT: Always ask the customer to confirm changes before calling this tool.
+
+    Args:
+        confirmation_number: The reservation confirmation ID - optional
+        new_date: New date (YYYY-MM-DD format) - optional
+        new_time: New time (HH:MM format) - optional
+        new_party_size: New party size - optional
+    """
+    logger.info(f"Modifying reservation: {confirmation_number or 'auto-detect'}")
+
+    try:
+        reservations = get_support_context()
+        
+        # If no confirmation number, handle based on reservation count
+        if not confirmation_number:
+            if not reservations:
+                return "❌ You don't have any reservations to modify."
+            
+            if len(reservations) == 1:
+                # Exactly one reservation - use it
+                reservation = reservations[0]
+                confirmation_number = reservation['reservation_id']
+                logger.info(f"Auto-selected single reservation: {confirmation_number}")
+            else:
+                # Multiple reservations - list them
+                output = f"You have {len(reservations)} reservations:\n\n"
+                for i, r in enumerate(reservations, 1):
+                    output += f"{i}. **{r['restaurant_name']}** - {r['date']} at {r['time']}\n"
+                    output += f"   📋 Confirmation: {r['reservation_id']}\n\n"
+                output += "Which reservation would you like to modify? Please provide the confirmation number."
+                return output
+        
+        # Find reservation
+        reservation = None
+        for r in reservations:
+            if r.get("reservation_id", "").lower() == confirmation_number.lower():
+                reservation = r
+                break
+
+        if not reservation:
+            return f"❌ No reservation found with confirmation number '{confirmation_number}'."
+
+        # Track what changed
+        changes = []
+
+        if new_date and new_date != reservation["date"]:
+            old_date = reservation["date"]
+            reservation["date"] = new_date
+            changes.append(f"Date: {old_date} → {new_date}")
+
+        if new_time and new_time != reservation["time"]:
+            old_time = reservation["time"]
+            reservation["time"] = new_time
+            changes.append(f"Time: {old_time} → {new_time}")
+
+        if new_party_size and new_party_size != reservation["party_size"]:
+            old_size = reservation["party_size"]
+            reservation["party_size"] = new_party_size
+            changes.append(f"Party Size: {old_size} → {new_party_size}")
+
+        if not changes:
+            return "No changes were made to the reservation."
+
+        # Save updated reservations back to context
+        set_support_context(reservations)
+
+        # Format output
+        output = f"✅ **Reservation Modified**\n\n"
+        output += f"📋 Confirmation #: {confirmation_number}\n"
+        output += f"🍽️  {reservation['restaurant_name']}\n\n"
+        output += f"**Changes Made:**\n"
+        for change in changes:
+            output += f"  • {change}\n"
+        output += f"\n**Updated Details:**\n"
+        output += f"📅 Date: {reservation['date']}\n"
+        output += f"🕐 Time: {reservation['time']}\n"
+        output += f"👥 Party Size: {reservation['party_size']}\n"
+
+        logger.info(f"Reservation modified: {len(changes)} changes")
+        return output
+
+    except Exception as e:
+        logger.error(f"Error modifying reservation: {e}", exc_info=True)
+        return f"Error modifying reservation: {str(e)}"
+    
+@tool
+def cancel_reservation_tool(confirmation_number: Optional[str] = None) -> str:
+    """Cancel a reservation.
+
+    If no confirmation_number is provided:
+    - If customer has exactly 1 reservation → cancel it
+    - If customer has multiple reservations → ask which one
+    - If customer has no reservations → tell them
+
+    IMPORTANT: Always confirm with the customer before cancelling.
+
+    Args:
+        confirmation_number: The reservation confirmation ID to cancel - optional
+    """
+    logger.info(f"Cancelling reservation: {confirmation_number or 'auto-detect'}")
+
+    try:
+        reservations = get_support_context()
+        
+        # If no confirmation number, handle based on reservation count
+        if not confirmation_number:
+            if not reservations:
+                return "❌ You don't have any reservations to cancel."
+            
+            if len(reservations) == 1:
+                # Exactly one reservation - cancel it
+                reservation = reservations.pop(0)
+                confirmation_number = reservation['reservation_id']
+                logger.info(f"Auto-selected and cancelled single reservation: {confirmation_number}")
+                
+                # Save updated reservations back to context
+                set_support_context(reservations)
+                
+                # Format output
+                output = f"✅ **Reservation Cancelled**\n\n"
+                output += f"📋 Confirmation #: {confirmation_number}\n"
+                output += f"🍽️  {reservation['restaurant_name']}\n"
+                output += f"📅 {reservation['date']} at {reservation['time']}\n"
+                output += f"👥 Party of {reservation['party_size']}\n\n"
+                output += f"Your table has been cancelled. We hope to serve you again soon!"
+                
+                logger.info("Reservation cancelled successfully")
+                return output
+            else:
+                # Multiple reservations - list them
+                output = f"You have {len(reservations)} reservations:\n\n"
+                for i, r in enumerate(reservations, 1):
+                    output += f"{i}. **{r['restaurant_name']}** - {r['date']} at {r['time']}\n"
+                    output += f"   📋 Confirmation: {r['reservation_id']}\n\n"
+                output += "Which reservation would you like to cancel? Please provide the confirmation number."
+                return output
+        
+        # Find and remove specific reservation
+        reservation = None
+        for i, r in enumerate(reservations):
+            if r.get("reservation_id", "").lower() == confirmation_number.lower():
+                reservation = reservations.pop(i)
+                break
+
+        if not reservation:
+            return f"❌ No reservation found with confirmation number '{confirmation_number}'."
+
+        # Save updated reservations back to context
+        set_support_context(reservations)
+
+        # Format output
+        output = f"✅ **Reservation Cancelled**\n\n"
+        output += f"📋 Confirmation #: {confirmation_number}\n"
+        output += f"🍽️  {reservation['restaurant_name']}\n"
+        output += f"📅 {reservation['date']} at {reservation['time']}\n"
+        output += f"👥 Party of {reservation['party_size']}\n\n"
+        output += f"Your table has been cancelled. We hope to serve you again soon!"
+
+        logger.info("Reservation cancelled successfully")
+        return output
+
+    except Exception as e:
+        logger.error(f"Error cancelling reservation: {e}", exc_info=True)
+        return f"Error cancelling reservation: {str(e)}"
+
+restaurant_tools = [
     search_restaurants_tool,
     get_restaurant_details_tool,
     check_availability_tool,
     make_reservation_tool,
     get_restaurant_reviews_tool,
 ]
+
+# Support agent tools
+support_tools = [
+    view_reservation_tool,
+    modify_reservation_tool,
+    cancel_reservation_tool,
+]
+
+# Backward compatibility - restaurant agent is the primary agent
+all_tools = restaurant_tools

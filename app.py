@@ -6,26 +6,43 @@ A conversational interface for restaurant discovery and reservations.
 
 from flask import Flask, render_template, request, jsonify, session
 import os
-import re
-import json
 import uuid
+import logging
 from datetime import datetime
 from dotenv import load_dotenv
-from src.agent import create_bitebot_agent, run_agent
+
+from src.discovery_and_reservation_agent import create_discovery_and_reservation_agent, run_agent
+from src.customer_support_agent import create_discovery_and_reservation_agent, run_support_agent
+from src.supervisor_agent import create_supervisor, route_request
 
 # Load environment variables
 load_dotenv()
 
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 app = Flask(__name__)
 app.secret_key = os.getenv('FLASK_SECRET_KEY', os.urandom(24).hex())
 
-# Initialize agent (shared across sessions)
+# Initialize multi-agent system (shared across sessions)
+restaurant_agent = None
+support_agent = None
+supervisor = None
+
 try:
-    agent = create_bitebot_agent()
-    print("✅ BiteBot initialized successfully!")
+    print("Initializing BiteBot multi-agent system...")
+    restaurant_agent = create_discovery_and_reservation_agent()
+    print("Restaurant agent initialized")
+    support_agent = create_support_agent()
+    print("Support agent initialized")
+    supervisor = create_supervisor()
+    print("Supervisor initialized")
+    print("✅ BiteBot ready!")
 except Exception as e:
-    print(f"❌ Error initializing agent: {e}")
-    agent = None
+    print(f"❌ Error initializing agents: {e}")
+    restaurant_agent = None
+    support_agent = None
+    supervisor = None
 
 
 @app.route('/')
@@ -38,7 +55,6 @@ def index():
     if 'tool_context' not in session:
         session['tool_context'] = {}
     if 'thread_id' not in session:
-        import uuid
         session['thread_id'] = str(uuid.uuid4())
 
     return render_template('index.html')
@@ -46,10 +62,10 @@ def index():
 
 @app.route('/chat', methods=['POST'])
 def chat():
-    """Handle chat messages."""
-    if not agent:
+    """Handle chat messages with multi-agent routing."""
+    if not all([restaurant_agent, support_agent, supervisor]):
         return jsonify({
-            'error': 'Agent not initialized. Please check your configuration.'
+            'error': 'Agents not initialized. Please check your configuration.'
         }), 500
 
     try:
@@ -59,51 +75,65 @@ def chat():
         if not user_message:
             return jsonify({'error': 'Empty message'}), 400
 
-        # Get tool context from session (inter-tool state like availability)
+        # Get session data
+        ui_messages = session.get('messages', [])
         tool_context = session.get('tool_context', {})
+        reservations = session.get('reservations', [])
+
+        # Route to appropriate agent
+        agent_choice = route_request(supervisor, user_message, ui_messages)
+        logger.info(f"Routing to {agent_choice} agent")
 
         # thread_id scopes the agent's memory to this session.
-        # The checkpointer owns conversation history — we only send the new message.
         thread_id = session.get('thread_id')
         if not thread_id:
             thread_id = str(uuid.uuid4())
             session['thread_id'] = thread_id
 
-        # Get agent response
-        response = run_agent(agent, user_message, thread_id, tool_context)
-        assistant_message = response.get('output', 'Sorry, I encountered an error.')
+        # Call the selected agent
+        if agent_choice == "support":
+            response = run_support_agent(
+                support_agent, user_message, thread_id, reservations
+            )
+            assistant_message = response.get('output', 'Sorry, I encountered an error.')
+            # Support agent may have modified reservations
+            session['reservations'] = response.get('reservations', reservations)
 
-        # Store reservation if make_reservation_tool fired this turn
-        reservation_json = response.get('reservation_json')
-        if reservation_json:
-            try:
-                reservation = json.loads(reservation_json)
-                reservations = session.get('reservations', [])
+        else:  # restaurant
+            response = run_agent(
+                restaurant_agent, user_message, thread_id, tool_context
+            )
+            assistant_message = response.get('output', 'Sorry, I encountered an error.')
+
+            # Store reservation if created
+            reservation_json = response.get('reservation_json')
+            if reservation_json:
+                # reservation_json is already a dict (not a JSON string)
+                reservation = reservation_json
                 existing_ids = [r['reservation_id'] for r in reservations]
                 if reservation['reservation_id'] not in existing_ids:
                     reservations.append(reservation)
                     session['reservations'] = reservations
-            except json.JSONDecodeError:
-                pass
+                    logger.info(f"Reservation saved: {reservation['reservation_id']}")
 
-        # Clean up the output (remove IMPORTANT line if the LLM echoed it)
-        clean_message = re.sub(r'\n*IMPORTANT: This reservation data includes: {.*?}\n*', '', assistant_message)
+            # Update tool context
+            session['tool_context'] = response.get('tool_context', {})
 
         # session['messages'] is for the chat UI only — the agent's memory
         # lives in the checkpointer keyed by thread_id.
-        ui_messages = session.get('messages', [])
         ui_messages.append({'role': 'user',      'content': user_message})
-        ui_messages.append({'role': 'assistant', 'content': clean_message})
+        ui_messages.append({'role': 'assistant', 'content': assistant_message})
         session['messages'] = ui_messages
-        session['tool_context'] = response.get('tool_context', {})
         session.modified = True
 
         return jsonify({
-            'message': clean_message,
-            'reservations': session.get('reservations', [])
+            'message': assistant_message,
+            'reservations': session.get('reservations', []),
+            'agent': agent_choice  # Let frontend know which agent responded
         })
 
     except Exception as e:
+        logger.error(f"Error in chat endpoint: {e}", exc_info=True)
         print(f"Error in chat endpoint: {e}")
         return jsonify({
             'error': f'An error occurred: {str(e)}'
@@ -132,9 +162,12 @@ def get_reservations():
 @app.route('/health', methods=['GET'])
 def health():
     """Health check endpoint for monitoring."""
+    all_initialized = all([restaurant_agent, support_agent, supervisor])
     return jsonify({
-        'status': 'healthy',
-        'agent_initialized': agent is not None,
+        'status': 'healthy' if all_initialized else 'degraded',
+        'restaurant_agent': restaurant_agent is not None,
+        'support_agent': support_agent is not None,
+        'supervisor': supervisor is not None,
         'timestamp': datetime.now().isoformat()
     })
 

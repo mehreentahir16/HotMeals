@@ -10,6 +10,7 @@ Usage:
 
 import json
 import sqlite3
+import traceback
 from pathlib import Path
 
 def validate_sample_data():
@@ -167,5 +168,4 @@ if __name__ == '__main__':
         validate_sample_data()
     except Exception as e:
         print(f"\n❌ Validation failed: {e}")
-        import traceback
         traceback.print_exc()
